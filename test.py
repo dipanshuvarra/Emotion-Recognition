@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 from collections import Counter
-from deepface import DeepFace
 
 # Load Haar cascades for face, eye detection
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
@@ -10,6 +9,7 @@ eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml
 # Variables to store data
 focus_and_emotion_data = []
 final_summary_data = []
+
 
 # Function to detect concentration level based on eye positions
 def detect_concentration(eyes, face_gray):
@@ -37,35 +37,48 @@ def detect_concentration(eyes, face_gray):
         return "Medium"
     return "Low"
 
-# Function to detect emotion using DeepFace
-def detect_emotion_deepface(face_img):
-    result = DeepFace.analyze(face_img, actions=['emotion'], enforce_detection=False)
-    return result['dominant_emotion']
 
-# Open video files
-ad_capture = cv2.VideoCapture('ad.mp4')
-webcam_capture = cv2.VideoCapture(1)  # Webcam capture
+# Function to detect emotion based on face features
+def detect_emotion(face_img):
+    # Detect mouth, eyebrows, and forehead wrinkles to classify emotions
+    ycrcb = cv2.cvtColor(face_img, cv2.COLOR_BGR2YCrCb)
+    cr_channel = ycrcb[:, :, 1]
+    _, mouth_mask = cv2.threshold(cr_channel, 150, 255, cv2.THRESH_BINARY)
+    mouth_region = mouth_mask[int(face_img.shape[0] * 0.5):]  # Lower half
 
-if not ad_capture.isOpened() or not webcam_capture.isOpened():
-    print("Error: Could not open video files.")
+    gray_forehead = cv2.cvtColor(face_img[:int(face_img.shape[0] * 0.25), :], cv2.COLOR_BGR2GRAY)
+    wrinkles = cv2.Canny(gray_forehead, 100, 200)
+
+    features = {
+        'mouth_open': len(np.where(mouth_region > 0)[0]) > 500,
+        'wrinkles': np.sum(wrinkles) / 255 > 50  # Threshold for wrinkles
+    }
+
+    if features['mouth_open'] and not features['wrinkles']:
+        return "Happy"
+    elif features['mouth_open'] and features['wrinkles']:
+        return "Surprise"
+    elif not features['mouth_open'] and features['wrinkles']:
+        return "Angry"
+    else:
+        return "Neutral"
+
+
+# Process each frame, capture concentration and emotion
+cap = cv2.VideoCapture('ad.mp4')
+if not cap.isOpened():
+    print("Error: Could not open video file.")
 else:
-    frame_rate = int(ad_capture.get(cv2.CAP_PROP_FPS))
-    interval = frame_rate  # Analyze every second
+    frame_rate = int(cap.get(cv2.CAP_PROP_FPS))
+    interval = frame_rate  # Analyzing every second
     second_counter = 0
 
-    while ad_capture.isOpened():
-        # Read a frame from the ad and the webcam
-        ad_ret, ad_frame = ad_capture.read()
-        webcam_ret, webcam_frame = webcam_capture.read()
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-        if not ad_ret or not webcam_ret:
-            break  # End loop if either the ad or webcam capture ends
-
-        # Display the ad
-        cv2.imshow('Ad Playback', ad_frame)
-
-        # Process webcam frame for emotion and concentration
-        gray = cv2.cvtColor(webcam_frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
         concentration_level = "Low"
@@ -76,26 +89,19 @@ else:
                 face_gray = gray[y:y + h, x:x + w]
                 eyes = eye_cascade.detectMultiScale(face_gray)
                 concentration_level = detect_concentration(eyes, face_gray)
+                emotion = detect_emotion(frame[y:y + h, x:x + w])
 
-                # Extract the face region and analyze emotion
-                face_roi = webcam_frame[y:y + h, x:x + w]
-                emotion = detect_emotion_deepface(face_roi)
-
-                # Draw rectangles and labels on webcam frame
-                cv2.rectangle(webcam_frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-                cv2.putText(webcam_frame, f"{concentration_level}, {emotion}", (x, y - 10),
+                # Draw rectangles and labels
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+                cv2.putText(frame, f"{concentration_level}, {emotion}", (x, y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-        # Display the webcam frame
-        cv2.imshow('Focus and Emotion Detection', webcam_frame)
 
         # Capture data every second
         if second_counter % interval == 0:
             focus_and_emotion_data.append((concentration_level, emotion))
 
         second_counter += 1
-
-        # End the loop if 'q' is pressed
+        cv2.imshow('Focus and Emotion Detection', frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
@@ -108,9 +114,7 @@ else:
         most_common_emotion = Counter(emotions).most_common(1)[0][0]
         final_summary_data.append((most_common_concentration, most_common_emotion))
 
-    # Release resources
-    ad_capture.release()
-    webcam_capture.release()
+    cap.release()
     cv2.destroyAllWindows()
 
 print("Focus and Emotion Data (every second):", focus_and_emotion_data)
